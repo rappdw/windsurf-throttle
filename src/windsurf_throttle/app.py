@@ -90,6 +90,9 @@ def render_verify_section() -> None:
     st.subheader("👥 Users with Custom Caps")
     st.markdown("Find all users whose add-on credit cap differs from the team default.")
 
+    if "custom_cap_users" not in st.session_state:
+        st.session_state.custom_cap_users = []
+
     if st.button("Find Users with Custom Caps", key="find_custom_caps"):
         with st.spinner("Fetching team configuration..."):
             try:
@@ -142,11 +145,63 @@ def render_verify_section() -> None:
         status_text.empty()
         progress.empty()
 
+        st.session_state.custom_cap_users = results
+
         if results:
             st.success(f"Found **{len(results)}** users with custom caps")
-            st.dataframe(pd.DataFrame(results), use_container_width=True)
         else:
             st.success("All users are using the team default cap")
+
+    if st.session_state.custom_cap_users:
+        st.dataframe(pd.DataFrame(st.session_state.custom_cap_users), use_container_width=True)
+
+        st.divider()
+        st.markdown("**Reset to Team Default**")
+        st.markdown("Clear individual caps for selected users so they use the team default.")
+
+        select_all = st.checkbox("Select all users", key="select_all_custom_caps")
+
+        selected_emails = []
+        for user in st.session_state.custom_cap_users:
+            email = user["Email"]
+            checked = st.checkbox(
+                f"{user['Name']} ({email}) - Current cap: {user['User Cap']}",
+                value=select_all,
+                key=f"clear_cap_{email}",
+            )
+            if checked:
+                selected_emails.append(email)
+
+        if selected_emails and st.button(
+            f"🗑️ Clear Caps for {len(selected_emails)} User(s)",
+            type="primary",
+            key="clear_selected_caps",
+        ):
+            progress = st.progress(0)
+            status_text = st.empty()
+            success_count = 0
+            fail_count = 0
+
+            for i, email in enumerate(selected_emails):
+                status_text.text(f"Clearing cap for {email}...")
+                try:
+                    set_usage_config(clear_add_on_credit_cap=True, user_email=email)
+                    success_count += 1
+                except WindsurfAPIError as e:
+                    st.error(f"Failed to clear cap for {email}: {e}")
+                    fail_count += 1
+                progress.progress((i + 1) / len(selected_emails))
+
+            status_text.empty()
+            progress.empty()
+
+            if success_count > 0:
+                st.success(f"✓ Cleared caps for {success_count} user(s)")
+            if fail_count > 0:
+                st.warning(f"Failed to clear caps for {fail_count} user(s)")
+
+            st.session_state.custom_cap_users = []
+            st.rerun()
 
 
 def render_set_team_section() -> None:
