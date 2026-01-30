@@ -26,8 +26,23 @@ jobs:
     - name: Install build tools
       run: pip install build
 
+    - name: Verify pyproject.toml
+      run: |
+        echo "Checking pyproject.toml hatchling config:"
+        grep -A 2 "tool.hatch.build.targets.wheel" pyproject.toml
+
+    - name: Clean build artifacts
+      run: rm -rf dist/ build/ *.egg-info
+
     - name: Build binary wheel and source tarball
       run: python -m build
+
+    - name: Verify wheel metadata
+      run: |
+        echo "Checking wheel contents:"
+        unzip -l dist/*.whl | grep METADATA
+        echo "Extracting metadata:"
+        unzip -p dist/*.whl */METADATA | head -20
 
     - name: Publish to PyPI
       uses: pypa/gh-action-pypi-publish@release/v1.10
