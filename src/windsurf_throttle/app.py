@@ -394,6 +394,25 @@ def main() -> None:
     if not check_configuration():
         st.stop()
 
+    try:
+        team_config = get_usage_config(team_level=True)
+        team_cap = team_config.get("addOnCreditCap")
+
+        if team_cap is not None:
+            st.info(
+                f"📊 **Team Add-on Credit Cap:** {team_cap} credits | "
+                f"[View Current Balance →](https://windsurf.com/team/analytics)"
+            )
+        else:
+            st.warning(
+                "⚠️ No team add-on credit cap configured | "
+                "[View Current Balance →](https://windsurf.com/team/analytics)"
+            )
+    except WindsurfAPIError:
+        st.warning("[View Team Analytics →](https://windsurf.com/team/analytics)")
+
+    st.divider()
+
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Select action:",
