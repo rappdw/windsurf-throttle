@@ -70,9 +70,9 @@ def get_usage_config(
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as e:
-        raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}")
+        raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}") from e
     except Exception as e:
-        raise WindsurfAPIError(f"Error getting usage config: {e}")
+        raise WindsurfAPIError(f"Error getting usage config: {e}") from e
 
 
 def get_team_users(
@@ -117,6 +117,39 @@ def get_team_users(
         raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}") from e
     except Exception as e:
         raise WindsurfAPIError(f"Error getting team users: {e}") from e
+
+
+def get_team_credit_balance() -> dict[str, Any]:
+    """Get team credit balance via Windsurf API.
+
+    Returns:
+        API response with credit balance information including:
+        - promptCreditsPerSeat: Credits allocated per seat
+        - numSeats: Number of seats on the team
+        - addOnCreditsAvailable: Total add-on credits available
+        - addOnCreditsUsed: Add-on credits consumed
+        - billingCycleStart: Start of billing cycle (ISO 8601)
+        - billingCycleEnd: End of billing cycle (ISO 8601)
+
+    Raises:
+        WindsurfAPIError: If the API call fails.
+    """
+    service_key = get_service_key()
+    payload: dict[str, Any] = {"service_key": service_key}
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.post(
+                f"{API_BASE_URL}/api/v1/GetTeamCreditBalance",
+                json=payload,
+                headers={"Content-Type": "application/json"},
+            )
+            response.raise_for_status()
+            return response.json()
+    except httpx.HTTPStatusError as e:
+        raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}") from e
+    except Exception as e:
+        raise WindsurfAPIError(f"Error getting team credit balance: {e}") from e
 
 
 def set_usage_config(
@@ -170,6 +203,6 @@ def set_usage_config(
             response.raise_for_status()
             return response.json()
     except httpx.HTTPStatusError as e:
-        raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}")
+        raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}") from e
     except Exception as e:
-        raise WindsurfAPIError(f"Error setting usage config: {e}")
+        raise WindsurfAPIError(f"Error setting usage config: {e}") from e

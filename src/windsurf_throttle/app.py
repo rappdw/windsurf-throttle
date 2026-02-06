@@ -10,6 +10,7 @@ from windsurf_throttle.api import (
     DEFAULT_INDIVIDUAL_CAP_BUFFER,
     DEFAULT_ORG_ADDON_CAP,
     WindsurfAPIError,
+    get_team_credit_balance,
     get_team_users,
     get_usage_config,
     set_usage_config,
@@ -395,21 +396,39 @@ def main() -> None:
         st.stop()
 
     try:
-        team_config = get_usage_config(team_level=True)
-        team_cap = team_config.get("addOnCreditCap")
+        balance = get_team_credit_balance()
 
-        if team_cap is not None:
-            st.info(
-                f"📊 **Team Add-on Credit Cap:** {team_cap} credits | "
-                f"[View Current Balance →](https://windsurf.com/team/analytics)"
+        with st.expander("🔍 Debug: Raw API Response"):
+            st.json(balance)
+
+        addon_available = int(balance.get("addOnCreditsAvailable", 0))
+        addon_used = int(balance.get("addOnCreditsUsed", 0))
+        addon_remaining = addon_available - addon_used
+
+        col1, col2 = st.columns(2)
+
+        with col1:
+            st.metric(
+                label="💳 Add-on Credits Remaining",
+                value=f"{addon_remaining:,}",
+                delta=f"{addon_available:,} total"
             )
-        else:
-            st.warning(
-                "⚠️ No team add-on credit cap configured | "
-                "[View Current Balance →](https://windsurf.com/team/analytics)"
+
+        with col2:
+            usage_pct = (addon_used / addon_available * 100) if addon_available > 0 else 0
+            st.metric(
+                label="📊 Add-on Credits Used",
+                value=f"{addon_used:,}",
+                delta=f"{usage_pct:.1f}% used"
             )
-    except WindsurfAPIError:
-        st.warning("[View Team Analytics →](https://windsurf.com/team/analytics)")
+
+        billing_start = balance.get("billingCycleStart", "")
+        billing_end = balance.get("billingCycleEnd", "")
+        if billing_start and billing_end:
+            st.caption(f"📅 Billing cycle: {billing_start[:10]} to {billing_end[:10]}")
+    except WindsurfAPIError as e:
+        st.warning(f"⚠️ Could not fetch credit balance: {e}")
+        st.info("[View Team Analytics →](https://windsurf.com/team/analytics)")
 
     st.divider()
 
