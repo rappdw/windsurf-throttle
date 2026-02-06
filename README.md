@@ -14,7 +14,7 @@ A Streamlit application for managing Windsurf add-on credit caps.
 
 ```bash
 # Run directly from GitHub
-uvx --from git+https://github.com/PFPT-Internal/windsurf-throttle windsurf-throttle
+uvx --from git+https://github.com/rappdw/windsurf-throttle windsurf-throttle
 
 # Or from PyPI (when published)
 uvx windsurf-throttle
@@ -30,7 +30,7 @@ windsurf-throttle
 ### From source
 
 ```bash
-git clone https://github.com/PFPT-Internal/windsurf-throttle.git
+git clone https://github.com/rappdw/windsurf-throttle.git
 cd windsurf-throttle
 uv sync
 uv run windsurf-throttle
@@ -93,7 +93,7 @@ Upload a CSV with these columns:
 
 ```bash
 # Clone and install dev dependencies
-git clone https://github.com/PFPT-Internal/windsurf-throttle.git
+git clone https://github.com/rappdw/windsurf-throttle.git
 cd windsurf-throttle
 uv sync --all-extras
 

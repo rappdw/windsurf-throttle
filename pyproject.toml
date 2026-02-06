@@ -1,6 +1,6 @@
 [project]
 name = "windsurf-throttle"
-version = "1.0.2"
+version = "1.0.3"
 description = "Streamlit app for managing Windsurf credit caps"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -25,8 +25,8 @@ dependencies = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/PFPT-Internal/windsurf-throttle"
-Repository = "https://github.com/PFPT-Internal/windsurf-throttle"
+Homepage = "https://github.com/rappdw/windsurf-throttle"
+Repository = "https://github.com/rappdw/windsurf-throttle"
 
 [project.scripts]
 windsurf-throttle = "windsurf_throttle.cli:main"
