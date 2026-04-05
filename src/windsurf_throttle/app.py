@@ -1,6 +1,8 @@
 """Streamlit app for managing Windsurf credit caps."""
 
 import os
+from datetime import datetime
+from typing import Any
 
 import pandas as pd
 import streamlit as st
@@ -10,6 +12,8 @@ from windsurf_throttle.api import (
     DEFAULT_INDIVIDUAL_CAP_BUFFER,
     DEFAULT_ORG_ADDON_CAP,
     WindsurfAPIError,
+    get_scim_groups,
+    get_scim_users,
     get_team_credit_balance,
     get_team_users,
     get_usage_config,
@@ -84,7 +88,7 @@ def render_verify_section() -> None:
                         results.append({"Email": email, "Add-on Cap": "-", "Status": f"✗ {e}"})
                     progress.progress((i + 1) / len(emails))
 
-                st.dataframe(pd.DataFrame(results), use_container_width=True)
+                st.dataframe(pd.DataFrame(results), width="stretch")
 
     st.divider()
 
@@ -154,7 +158,7 @@ def render_verify_section() -> None:
             st.success("All users are using the team default cap")
 
     if st.session_state.custom_cap_users:
-        st.dataframe(pd.DataFrame(st.session_state.custom_cap_users), use_container_width=True)
+        st.dataframe(pd.DataFrame(st.session_state.custom_cap_users), width="stretch")
 
         st.divider()
         st.markdown("**Reset to Team Default**")
@@ -348,7 +352,7 @@ def render_set_individual_section() -> None:
                 st.write(f"**{len(high_usage)}** users above threshold:")
                 st.dataframe(
                     high_usage[["email", "credits_used", "addon_used", "proposed_cap", "total_available"]],
-                    use_container_width=True,
+                    width="stretch",
                 )
 
                 dry_run = st.checkbox("Dry run (don't actually set caps)", value=True)
@@ -378,7 +382,275 @@ def render_set_individual_section() -> None:
 
                     status_text.empty()
                     st.success("Processing complete!")
-                    st.dataframe(pd.DataFrame(results), use_container_width=True)
+                    st.dataframe(pd.DataFrame(results), width="stretch")
+
+
+def _shift_cycle(
+    balance: dict[str, Any], n_cycles_back: int
+) -> tuple[str | None, str | None, str]:
+    """Shift the current billing cycle backwards by N cycles.
+
+    Returns (start_iso, end_iso, label). If N=0, returns the current cycle.
+    """
+    start_raw = balance.get("billingCycleStart")
+    end_raw = balance.get("billingCycleEnd")
+    if not start_raw or not end_raw:
+        return None, None, "unknown cycle"
+
+    # Parse ISO 8601; handle trailing Z
+    def _parse(s: str) -> datetime:
+        return datetime.fromisoformat(str(s).replace("Z", "+00:00"))
+
+    start = _parse(start_raw)
+    end = _parse(end_raw)
+    duration = end - start
+    new_start = start - n_cycles_back * duration
+    new_end = end - n_cycles_back * duration
+
+    def _fmt(dt: datetime) -> str:
+        return dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+
+    label = f"{new_start.date()} to {new_end.date()}"
+    return _fmt(new_start), _fmt(new_end), label
+
+
+def _resolve_scope(
+    scope: str, n_back: int, balance: dict[str, Any]
+) -> tuple[str | None, str | None, str]:
+    """Resolve a scope choice into (start_timestamp, end_timestamp, label)."""
+    if scope == "Lifetime (no timestamp filter)":
+        return None, None, "lifetime"
+    if scope == "Current billing cycle":
+        return _shift_cycle(balance, 0)
+    if scope == "Nth previous billing cycle":
+        return _shift_cycle(balance, n_back)
+    return None, None, "unknown"
+
+
+def render_reports_section() -> None:
+    """Render the Utilization Reports section."""
+    st.header("📊 Utilization Reports")
+
+    st.subheader("📊 Per-Group Usage Report (CSV)")
+    st.markdown(
+        "Aggregates per-user flow credit usage by group for the **current billing cycle**. "
+        "**Cost model:** $32 base seat fee + $0.04 × (credits used above 500). "
+        "A user counts in every group they belong to."
+    )
+
+    group_scope = st.radio(
+        "Time scope",
+        ["Current billing cycle", "Lifetime (no timestamp filter)", "Nth previous billing cycle"],
+        key="group_report_scope",
+        horizontal=True,
+    )
+    group_n_back = 1
+    if group_scope == "Nth previous billing cycle":
+        group_n_back = st.number_input(
+            "N (1 = previous cycle, 2 = two cycles ago, ...)",
+            min_value=1,
+            max_value=60,
+            value=1,
+            step=1,
+            key="group_report_n_back",
+        )
+
+    if st.button("Generate Report", type="primary", key="gen_usage_report"):
+        with st.spinner("Fetching team usage, SCIM users, groups, and billing cycle..."):
+            try:
+                balance = get_team_credit_balance()
+                start_ts, end_ts, scope_label = _resolve_scope(
+                    group_scope, int(group_n_back), balance
+                )
+                team_users = get_team_users(start_timestamp=start_ts, end_timestamp=end_ts)
+                scim_users = get_scim_users()
+                scim_groups = get_scim_groups()
+            except WindsurfAPIError as e:
+                st.error(f"Failed to fetch data: {e}")
+                return
+
+        cycle_start = (start_ts or "")[:10]
+        cycle_end = (end_ts or "")[:10]
+        st.caption(f"📅 Scope: **{scope_label}**")
+
+        # Map SCIM user id -> email (to join with team_users which is keyed by email)
+        def _email_of(u: dict[str, Any]) -> str:
+            emails = u.get("emails") or []
+            if emails:
+                return str(emails[0].get("value", "")).lower()
+            return str(u.get("userName", "")).lower()
+
+        scim_id_to_email = {u.get("id", ""): _email_of(u) for u in scim_users}
+        scim_id_to_name = {
+            u.get("id", ""): u.get("displayName") or _email_of(u) for u in scim_users
+        }
+
+        # Map email -> usage (promptCreditsUsed is in hundredths; divide by 100 for credits)
+        email_to_credits: dict[str, int] = {}
+        email_to_name: dict[str, str] = {}
+        for u in team_users:
+            email = str(u.get("email", "")).lower()
+            if not email:
+                continue
+            raw = u.get("promptCreditsUsed", 0) or 0
+            credits = int(raw) // 100
+            email_to_credits[email] = credits
+            email_to_name[email] = u.get("name", "") or email
+
+        def _cost(credits: int) -> float:
+            overage = max(0, credits - 500)
+            return 32.0 + 0.04 * overage
+
+        # Build per-group rows
+        group_rows: dict[str, list[dict[str, Any]]] = {}
+        missing_usage: set[str] = set()
+
+        for g in scim_groups:
+            gname = g.get("displayName", "")
+            if not gname:
+                continue
+            rows: list[dict[str, Any]] = []
+            for m in g.get("members", []):
+                uid = m.get("value", "")
+                email = scim_id_to_email.get(uid, "")
+                if not email:
+                    continue
+                credits = email_to_credits.get(email)
+                name = email_to_name.get(email) or scim_id_to_name.get(uid, "")
+                if credits is None:
+                    missing_usage.add(email)
+                    credits = 0
+                rows.append({
+                    "Name": name,
+                    "Email": email,
+                    "Credits Used": credits,
+                    "Base Cost": 32.00,
+                    "Overage Cost": round(0.04 * max(0, credits - 500), 2),
+                    "Total Cost": round(_cost(credits), 2),
+                })
+            group_rows[gname] = rows
+
+        # Build summary sheet
+        summary = []
+        for gname, rows in sorted(group_rows.items()):
+            total_credits = sum(r["Credits Used"] for r in rows)
+            total_cost = sum(r["Total Cost"] for r in rows)
+            summary.append({
+                "Group": gname,
+                "# Members": len(rows),
+                "Total Credits Used": total_credits,
+                "Total Cost ($)": round(total_cost, 2),
+                "Avg Credits / Member": round(total_credits / len(rows), 1) if rows else 0,
+                "Avg Cost / Member ($)": round(total_cost / len(rows), 2) if rows else 0,
+            })
+
+        # Preview
+        st.success(f"Report generated for {len(group_rows)} group(s)")
+        if cycle_start and cycle_end:
+            st.caption(f"📅 Billing cycle: **{cycle_start}** to **{cycle_end}**")
+        st.dataframe(pd.DataFrame(summary), width="stretch")
+
+        if missing_usage:
+            with st.expander(f"⚠️ {len(missing_usage)} user(s) in groups had no usage data"):
+                st.write(sorted(missing_usage))
+
+        csv_data = pd.DataFrame(summary).to_csv(index=False).encode("utf-8")
+        fname_suffix = f"{cycle_start}_to_{cycle_end}" if cycle_start and cycle_end else "current"
+        st.download_button(
+            label="📥 Download Group CSV",
+            data=csv_data,
+            file_name=f"windsurf-group-usage_{fname_suffix}.csv",
+            mime="text/csv",
+            key="download_group_csv",
+        )
+
+    st.divider()
+
+    st.subheader("📄 Per-User Usage Report (CSV)")
+    st.markdown(
+        "Per-user flow credit usage and cost for the **current billing cycle**. "
+        "**Cost model:** $32 base seat fee + $0.04 × (credits used above 500)."
+    )
+
+    scope = st.radio(
+        "Time scope",
+        ["Current billing cycle", "Lifetime (no timestamp filter)", "Nth previous billing cycle"],
+        key="usage_scope",
+        horizontal=True,
+    )
+    user_n_back = 1
+    if scope == "Nth previous billing cycle":
+        user_n_back = st.number_input(
+            "N (1 = previous cycle, 2 = two cycles ago, ...)",
+            min_value=1,
+            max_value=60,
+            value=1,
+            step=1,
+            key="user_csv_n_back",
+        )
+
+    if st.button("Generate User CSV", type="primary", key="gen_user_csv"):
+        with st.spinner("Fetching user usage..."):
+            try:
+                balance = get_team_credit_balance()
+                start_ts, end_ts, scope_label = _resolve_scope(
+                    scope, int(user_n_back), balance
+                )
+                team_users = get_team_users(
+                    start_timestamp=start_ts, end_timestamp=end_ts
+                )
+            except WindsurfAPIError as e:
+                st.error(f"Failed to fetch data: {e}")
+                return
+
+        cycle_start = (start_ts or "")[:10]
+        cycle_end = (end_ts or "")[:10]
+        st.caption(f"📅 Scope: **{scope_label}**")
+
+        rows = []
+        for u in team_users:
+            email = str(u.get("email", ""))
+            if not email:
+                continue
+            raw = int(u.get("promptCreditsUsed", 0) or 0)
+            credits = raw // 100
+            overage = max(0, credits - 500)
+            rows.append({
+                "Name": u.get("name", "") or email,
+                "Email": email,
+                "Raw promptCreditsUsed": raw,
+                "Credits Used": credits,
+                "Base Cost": 32.00,
+                "Overage Cost": round(0.04 * overage, 2),
+                "Total Cost": round(32.0 + 0.04 * overage, 2),
+                "Last Chat Usage": str(u.get("lastChatUsageTime", ""))[:10],
+                "Active Days": u.get("activeDays", 0),
+                "Role": u.get("role", ""),
+                "Team Status": u.get("teamStatus", ""),
+            })
+
+        rows.sort(key=lambda r: r["Credits Used"], reverse=True)
+        df = pd.DataFrame(rows)
+
+        total_credits = int(df["Credits Used"].sum()) if not df.empty else 0
+        total_cost = float(df["Total Cost"].sum()) if not df.empty else 0.0
+
+        st.success(f"Report generated for {len(rows)} user(s)")
+        if cycle_start and cycle_end:
+            st.caption(f"📅 Billing cycle: **{cycle_start}** to **{cycle_end}**")
+        st.metric("Total Credits", f"{total_credits:,}")
+        st.metric("Total Cost", f"${total_cost:,.2f}")
+        st.dataframe(df, width="stretch")
+
+        csv_data = df.to_csv(index=False).encode("utf-8")
+        fname_suffix = f"{cycle_start}_to_{cycle_end}" if cycle_start and cycle_end else "current"
+        st.download_button(
+            label="📥 Download User CSV",
+            data=csv_data,
+            file_name=f"windsurf-user-usage_{fname_suffix}.csv",
+            mime="text/csv",
+            key="download_user_csv",
+        )
 
 
 def main() -> None:
@@ -435,7 +707,7 @@ def main() -> None:
     st.sidebar.title("Navigation")
     page = st.sidebar.radio(
         "Select action:",
-        ["Verify Caps", "Set Team Cap", "Set Individual Caps"],
+        ["Verify Caps", "Set Team Cap", "Set Individual Caps", "Generate Utilization Reports"],
         label_visibility="collapsed",
     )
 
@@ -455,6 +727,8 @@ def main() -> None:
         render_set_team_section()
     elif page == "Set Individual Caps":
         render_set_individual_section()
+    elif page == "Generate Utilization Reports":
+        render_reports_section()
 
 
 if __name__ == "__main__":

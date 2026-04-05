@@ -152,6 +152,64 @@ def get_team_credit_balance() -> dict[str, Any]:
         raise WindsurfAPIError(f"Error getting team credit balance: {e}") from e
 
 
+def get_scim_users() -> list[dict[str, Any]]:
+    """Get all users via the SCIM API.
+
+    Returns:
+        List of user resources with id, userName, emails, name, etc.
+
+    Raises:
+        WindsurfAPIError: If the API call fails.
+    """
+    service_key = get_service_key()
+
+    try:
+        with httpx.Client(timeout=60.0) as client:
+            response = client.get(
+                f"{API_BASE_URL}/scim/v2/Users",
+                headers={
+                    "Authorization": f"Bearer {service_key}",
+                    "Content-Type": "application/scim+json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("Resources", [])
+    except httpx.HTTPStatusError as e:
+        raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}") from e
+    except Exception as e:
+        raise WindsurfAPIError(f"Error getting SCIM users: {e}") from e
+
+
+def get_scim_groups() -> list[dict[str, Any]]:
+    """Get all groups via the SCIM API.
+
+    Returns:
+        List of group resources with id, displayName, and members.
+
+    Raises:
+        WindsurfAPIError: If the API call fails.
+    """
+    service_key = get_service_key()
+
+    try:
+        with httpx.Client(timeout=30.0) as client:
+            response = client.get(
+                f"{API_BASE_URL}/scim/v2/Groups",
+                headers={
+                    "Authorization": f"Bearer {service_key}",
+                    "Content-Type": "application/scim+json",
+                },
+            )
+            response.raise_for_status()
+            data = response.json()
+            return data.get("Resources", [])
+    except httpx.HTTPStatusError as e:
+        raise WindsurfAPIError(f"HTTP error: {e.response.status_code} - {e.response.text}") from e
+    except Exception as e:
+        raise WindsurfAPIError(f"Error getting SCIM groups: {e}") from e
+
+
 def set_usage_config(
     set_add_on_credit_cap: int | None = None,
     clear_add_on_credit_cap: bool = False,
