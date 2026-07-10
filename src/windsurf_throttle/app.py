@@ -177,36 +177,82 @@ def render_verify_section() -> None:
             if checked:
                 selected_emails.append(email)
 
-        if selected_emails and st.button(
-            f"🗑️ Clear Caps for {len(selected_emails)} User(s)",
-            type="primary",
-            key="clear_selected_caps",
-        ):
-            progress = st.progress(0)
-            status_text = st.empty()
-            success_count = 0
-            fail_count = 0
+        col_clear, col_set = st.columns(2)
 
-            for i, email in enumerate(selected_emails):
-                status_text.text(f"Clearing cap for {email}...")
-                try:
-                    set_usage_config(clear_add_on_credit_cap=True, user_email=email)
-                    success_count += 1
-                except WindsurfAPIError as e:
-                    st.error(f"Failed to clear cap for {email}: {e}")
-                    fail_count += 1
-                progress.progress((i + 1) / len(selected_emails))
+        with col_clear:
+            if selected_emails and st.button(
+                f"🗑️ Clear Caps for {len(selected_emails)} User(s)",
+                type="primary",
+                key="clear_selected_caps",
+            ):
+                progress = st.progress(0)
+                status_text = st.empty()
+                success_count = 0
+                fail_count = 0
 
-            status_text.empty()
-            progress.empty()
+                for i, email in enumerate(selected_emails):
+                    status_text.text(f"Clearing cap for {email}...")
+                    try:
+                        set_usage_config(clear_add_on_credit_cap=True, user_email=email)
+                        success_count += 1
+                    except WindsurfAPIError as e:
+                        st.error(f"Failed to clear cap for {email}: {e}")
+                        fail_count += 1
+                    progress.progress((i + 1) / len(selected_emails))
 
-            if success_count > 0:
-                st.success(f"✓ Cleared caps for {success_count} user(s)")
-            if fail_count > 0:
-                st.warning(f"Failed to clear caps for {fail_count} user(s)")
+                status_text.empty()
+                progress.empty()
 
-            st.session_state.custom_cap_users = []
-            st.rerun()
+                if success_count > 0:
+                    st.success(f"✓ Cleared caps for {success_count} user(s)")
+                if fail_count > 0:
+                    st.warning(f"Failed to clear caps for {fail_count} user(s)")
+
+                st.session_state.custom_cap_users = []
+                st.rerun()
+
+        with col_set:
+            new_cap = st.number_input(
+                "Set selected users to this cap",
+                min_value=0,
+                max_value=100000,
+                value=500,
+                step=100,
+                key="bulk_set_cap_value",
+                help=f"Users will have {BASE_CREDITS} base + this add-on cap",
+            )
+            if selected_emails and st.button(
+                f"✏️ Set Cap to {int(new_cap)} for {len(selected_emails)} User(s)",
+                type="primary",
+                key="set_selected_caps",
+            ):
+                progress = st.progress(0)
+                status_text = st.empty()
+                success_count = 0
+                fail_count = 0
+
+                for i, email in enumerate(selected_emails):
+                    status_text.text(f"Setting cap for {email}...")
+                    try:
+                        set_usage_config(
+                            set_add_on_credit_cap=int(new_cap), user_email=email
+                        )
+                        success_count += 1
+                    except WindsurfAPIError as e:
+                        st.error(f"Failed to set cap for {email}: {e}")
+                        fail_count += 1
+                    progress.progress((i + 1) / len(selected_emails))
+
+                status_text.empty()
+                progress.empty()
+
+                if success_count > 0:
+                    st.success(f"✓ Set cap to {int(new_cap)} for {success_count} user(s)")
+                if fail_count > 0:
+                    st.warning(f"Failed to set cap for {fail_count} user(s)")
+
+                st.session_state.custom_cap_users = []
+                st.rerun()
 
 
 def render_set_team_section() -> None:
@@ -440,7 +486,12 @@ def render_reports_section() -> None:
 
     group_scope = st.radio(
         "Time scope",
-        ["Current billing cycle", "Lifetime (no timestamp filter)", "Nth previous billing cycle"],
+        [
+            "Current billing cycle",
+            "Lifetime (no timestamp filter)",
+            "Nth previous billing cycle",
+            "Custom date range",
+        ],
         key="group_report_scope",
         horizontal=True,
     )
@@ -454,38 +505,65 @@ def render_reports_section() -> None:
             step=1,
             key="group_report_n_back",
         )
+    group_date_start = None
+    group_date_end = None
+    if group_scope == "Custom date range":
+        col_a, col_b = st.columns(2)
+        with col_a:
+            group_date_start = st.date_input(
+                "Start date", value=datetime(2025, 8, 1).date(), key="group_date_start"
+            )
+        with col_b:
+            group_date_end = st.date_input("End date", key="group_date_end")
 
     if st.button("Generate Report", type="primary", key="gen_usage_report"):
-        with st.spinner("Fetching team usage, SCIM users, groups, and billing cycle..."):
+        try:
+            balance = get_team_credit_balance()
+        except WindsurfAPIError as e:
+            st.error(f"Failed to fetch credit balance: {e}")
+            return
+
+        start_ts: str | None
+        end_ts: str | None
+        if group_scope == "Custom date range":
+            start_ts = f"{group_date_start}T00:00:00Z"
+            end_ts = f"{group_date_end}T23:59:59Z"
+            scope_label = f"{group_date_start} to {group_date_end}"
+        else:
+            start_ts, end_ts, scope_label = _resolve_scope(
+                group_scope, int(group_n_back), balance
+            )
+        with st.spinner("Fetching SCIM users and groups..."):
             try:
-                balance = get_team_credit_balance()
-                start_ts, end_ts, scope_label = _resolve_scope(
-                    group_scope, int(group_n_back), balance
-                )
-                team_users = get_team_users(start_timestamp=start_ts, end_timestamp=end_ts)
                 scim_users = get_scim_users()
                 scim_groups = get_scim_groups()
             except WindsurfAPIError as e:
-                st.error(f"Failed to fetch data: {e}")
+                st.error(f"Failed to fetch SCIM data: {e}")
                 return
 
-        cycle_start = (start_ts or "")[:10]
-        cycle_end = (end_ts or "")[:10]
-        st.caption(f"📅 Scope: **{scope_label}**")
-
-        # Map SCIM user id -> email (to join with team_users which is keyed by email)
         def _email_of(u: dict[str, Any]) -> str:
             emails = u.get("emails") or []
             if emails:
                 return str(emails[0].get("value", "")).lower()
             return str(u.get("userName", "")).lower()
 
+        active_scim_ids = {u.get("id", "") for u in scim_users if u.get("active", True)}
         scim_id_to_email = {u.get("id", ""): _email_of(u) for u in scim_users}
-        scim_id_to_name = {
-            u.get("id", ""): u.get("displayName") or _email_of(u) for u in scim_users
-        }
+        def _cost(credits: int) -> float:
+            overage = max(0, credits - 500)
+            return 32.0 + 0.04 * overage
 
-        # Map email -> usage (promptCreditsUsed is in hundredths; divide by 100 for credits)
+        with st.spinner(f"Fetching usage for {scope_label}..."):
+            try:
+                team_users = get_team_users(start_timestamp=start_ts, end_timestamp=end_ts)
+            except WindsurfAPIError as e:
+                st.error(f"Failed to fetch team users: {e}")
+                return
+
+        cycle_start = (start_ts or "")[:10]
+        cycle_end = (end_ts or "")[:10]
+        st.caption(f"📅 Scope: **{scope_label}**")
+
         email_to_credits: dict[str, int] = {}
         email_to_name: dict[str, str] = {}
         for u in team_users:
@@ -497,69 +575,61 @@ def render_reports_section() -> None:
             email_to_credits[email] = credits
             email_to_name[email] = u.get("name", "") or email
 
-        def _cost(credits: int) -> float:
-            overage = max(0, credits - 500)
-            return 32.0 + 0.04 * overage
-
-        # Build per-group rows
-        group_rows: dict[str, list[dict[str, Any]]] = {}
+        summary: list[dict[str, Any]] = []
         missing_usage: set[str] = set()
 
         for g in scim_groups:
             gname = g.get("displayName", "")
             if not gname:
                 continue
-            rows: list[dict[str, Any]] = []
+            group_credits = 0
+            group_cost = 0.0
+            member_count = 0
             for m in g.get("members", []):
                 uid = m.get("value", "")
+                if uid not in active_scim_ids:
+                    continue
                 email = scim_id_to_email.get(uid, "")
                 if not email:
                     continue
-                credits = email_to_credits.get(email)
-                name = email_to_name.get(email) or scim_id_to_name.get(uid, "")
-                if credits is None:
+                member_credits = email_to_credits.get(email)
+                if member_credits is None:
                     missing_usage.add(email)
-                    credits = 0
-                rows.append({
-                    "Name": name,
-                    "Email": email,
-                    "Credits Used": credits,
-                    "Base Cost": 32.00,
-                    "Overage Cost": round(0.04 * max(0, credits - 500), 2),
-                    "Total Cost": round(_cost(credits), 2),
-                })
-            group_rows[gname] = rows
+                    member_credits = 0
+                member_count += 1
+                group_credits += member_credits
+                group_cost += _cost(member_credits)
 
-        # Build summary sheet
-        summary = []
-        for gname, rows in sorted(group_rows.items()):
-            total_credits = sum(r["Credits Used"] for r in rows)
-            total_cost = sum(r["Total Cost"] for r in rows)
             summary.append({
                 "Group": gname,
-                "# Members": len(rows),
-                "Total Credits Used": total_credits,
-                "Total Cost ($)": round(total_cost, 2),
-                "Avg Credits / Member": round(total_credits / len(rows), 1) if rows else 0,
-                "Avg Cost / Member ($)": round(total_cost / len(rows), 2) if rows else 0,
+                "# Members": member_count,
+                "Total Credits Used": group_credits,
+                "Total Cost ($)": round(group_cost, 2),
+                "Avg Credits / Member": (
+                    round(group_credits / member_count, 1) if member_count else 0
+                ),
+                "Avg Cost / Member ($)": (
+                    round(group_cost / member_count, 2) if member_count else 0
+                ),
             })
 
-        # Preview
-        st.success(f"Report generated for {len(group_rows)} group(s)")
-        if cycle_start and cycle_end:
-            st.caption(f"📅 Billing cycle: **{cycle_start}** to **{cycle_end}**")
-        st.dataframe(pd.DataFrame(summary), width="stretch")
+        df = pd.DataFrame(summary)
+        st.success(f"Report generated for {len(summary)} group(s)")
+        st.dataframe(df, width="stretch")
 
         if missing_usage:
-            with st.expander(f"⚠️ {len(missing_usage)} user(s) in groups had no usage data"):
+            with st.expander(f"⚠️ {len(missing_usage)} user(s) had no usage data"):
                 st.write(sorted(missing_usage))
 
-        csv_data = pd.DataFrame(summary).to_csv(index=False).encode("utf-8")
-        fname_suffix = f"{cycle_start}_to_{cycle_end}" if cycle_start and cycle_end else "current"
+        fname_suffix = f"{cycle_start}_to_{cycle_end}" if cycle_start and cycle_end else "all"
+        st.session_state["group_csv_data"] = df.to_csv(index=False).encode("utf-8")
+        st.session_state["group_csv_fname"] = f"windsurf-group-usage_{fname_suffix}.csv"
+
+    if "group_csv_data" in st.session_state:
         st.download_button(
             label="📥 Download Group CSV",
-            data=csv_data,
-            file_name=f"windsurf-group-usage_{fname_suffix}.csv",
+            data=st.session_state["group_csv_data"],
+            file_name=st.session_state["group_csv_fname"],
             mime="text/csv",
             key="download_group_csv",
         )
@@ -574,7 +644,12 @@ def render_reports_section() -> None:
 
     scope = st.radio(
         "Time scope",
-        ["Current billing cycle", "Lifetime (no timestamp filter)", "Nth previous billing cycle"],
+        [
+            "Current billing cycle",
+            "Lifetime (no timestamp filter)",
+            "Nth previous billing cycle",
+            "Custom date range",
+        ],
         key="usage_scope",
         horizontal=True,
     )
@@ -588,14 +663,35 @@ def render_reports_section() -> None:
             step=1,
             key="user_csv_n_back",
         )
+    user_date_start = None
+    user_date_end = None
+    if scope == "Custom date range":
+        col_a, col_b = st.columns(2)
+        with col_a:
+            user_date_start = st.date_input(
+                "Start date", value=datetime(2025, 8, 1).date(), key="user_date_start"
+            )
+        with col_b:
+            user_date_end = st.date_input("End date", key="user_date_end")
 
     if st.button("Generate User CSV", type="primary", key="gen_user_csv"):
-        with st.spinner("Fetching user usage..."):
+        try:
+            balance = get_team_credit_balance()
+        except WindsurfAPIError as e:
+            st.error(f"Failed to fetch credit balance: {e}")
+            return
+
+        if scope == "Custom date range":
+            start_ts = f"{user_date_start}T00:00:00Z"
+            end_ts = f"{user_date_end}T23:59:59Z"
+            scope_label = f"{user_date_start} to {user_date_end}"
+        else:
+            start_ts, end_ts, scope_label = _resolve_scope(
+                scope, int(user_n_back), balance
+            )
+
+        with st.spinner(f"Fetching {scope_label}..."):
             try:
-                balance = get_team_credit_balance()
-                start_ts, end_ts, scope_label = _resolve_scope(
-                    scope, int(user_n_back), balance
-                )
                 team_users = get_team_users(
                     start_timestamp=start_ts, end_timestamp=end_ts
                 )
@@ -611,6 +707,8 @@ def render_reports_section() -> None:
         for u in team_users:
             email = str(u.get("email", ""))
             if not email:
+                continue
+            if u.get("teamStatus") != "USER_TEAM_STATUS_APPROVED":
                 continue
             raw = int(u.get("promptCreditsUsed", 0) or 0)
             credits = raw // 100
@@ -636,18 +734,19 @@ def render_reports_section() -> None:
         total_cost = float(df["Total Cost"].sum()) if not df.empty else 0.0
 
         st.success(f"Report generated for {len(rows)} user(s)")
-        if cycle_start and cycle_end:
-            st.caption(f"📅 Billing cycle: **{cycle_start}** to **{cycle_end}**")
         st.metric("Total Credits", f"{total_credits:,}")
         st.metric("Total Cost", f"${total_cost:,.2f}")
         st.dataframe(df, width="stretch")
 
-        csv_data = df.to_csv(index=False).encode("utf-8")
-        fname_suffix = f"{cycle_start}_to_{cycle_end}" if cycle_start and cycle_end else "current"
+        fname_suffix = f"{cycle_start}_to_{cycle_end}" if cycle_start and cycle_end else "all"
+        st.session_state["user_csv_data"] = df.to_csv(index=False).encode("utf-8")
+        st.session_state["user_csv_fname"] = f"windsurf-user-usage_{fname_suffix}.csv"
+
+    if "user_csv_data" in st.session_state:
         st.download_button(
             label="📥 Download User CSV",
-            data=csv_data,
-            file_name=f"windsurf-user-usage_{fname_suffix}.csv",
+            data=st.session_state["user_csv_data"],
+            file_name=st.session_state["user_csv_fname"],
             mime="text/csv",
             key="download_user_csv",
         )
